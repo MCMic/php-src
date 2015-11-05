@@ -1773,6 +1773,10 @@ int main(int argc, char *argv[])
 	ZEND_TSRMLS_CACHE_UPDATE();
 #endif
 
+#ifdef ZEND_SIGNALS
+	zend_signal_startup();
+#endif
+
 #ifdef ZTS
 	ts_allocate_id(&php_cgi_globals_id, sizeof(php_cgi_globals_struct), (ts_allocate_ctor) php_cgi_globals_ctor, NULL);
 #else
@@ -2349,7 +2353,10 @@ consult the installation file that came with this distribution, or visit \n\
 						goto fastcgi_request_done;
 					}
 
-					if (SG(request_info).path_translated) efree(SG(request_info).path_translated);
+					if (SG(request_info).path_translated) {
+						efree(SG(request_info).path_translated);
+						SG(request_info).path_translated = NULL;
+					}
 
 					if (free_query_string && SG(request_info).query_string) {
 						free(SG(request_info).query_string);
@@ -2483,7 +2490,10 @@ consult the installation file that came with this distribution, or visit \n\
 
 fastcgi_request_done:
 			{
-				if (SG(request_info).path_translated) efree(SG(request_info).path_translated);
+				if (SG(request_info).path_translated) {
+					efree(SG(request_info).path_translated);
+					SG(request_info).path_translated = NULL;
+				}
 
 				php_request_shutdown((void *) 0);
 

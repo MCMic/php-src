@@ -199,7 +199,7 @@ MYSQLND_METHOD_PRIVATE(mysqlnd_conn_data, dtor)(MYSQLND_CONN_DATA * conn)
 	}
 
 	if (conn->stats) {
-		mysqlnd_stats_end(conn->stats);
+		mysqlnd_stats_end(conn->stats, conn->persistent);
 	}
 
 	mnd_pefree(conn, conn->persistent);
@@ -469,6 +469,7 @@ mysqlnd_switch_to_ssl_if_needed(
 	DBG_INF_FMT("CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA=	%d", mysql_flags & CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA? 1:0);
 	DBG_INF_FMT("CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS=	%d", mysql_flags & CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS? 1:0);
 	DBG_INF_FMT("CLIENT_SESSION_TRACK=		%d", mysql_flags & CLIENT_SESSION_TRACK? 1:0);
+	DBG_INF_FMT("CLIENT_SSL_DONT_VERIFY_SERVER_CERT=	%d", mysql_flags & CLIENT_SSL_DONT_VERIFY_SERVER_CERT? 1:0);
 	DBG_INF_FMT("CLIENT_SSL_VERIFY_SERVER_CERT=	%d", mysql_flags & CLIENT_SSL_VERIFY_SERVER_CERT? 1:0);
 	DBG_INF_FMT("CLIENT_REMEMBER_OPTIONS=		%d", mysql_flags & CLIENT_REMEMBER_OPTIONS? 1:0);
 
@@ -492,7 +493,11 @@ mysqlnd_switch_to_ssl_if_needed(
 		if (server_has_ssl == FALSE) {
 			goto close_conn;
 		} else {
-			zend_bool verify = mysql_flags & CLIENT_SSL_VERIFY_SERVER_CERT? TRUE:FALSE;
+			enum mysqlnd_ssl_peer verify = mysql_flags & CLIENT_SSL_VERIFY_SERVER_CERT?
+												MYSQLND_SSL_PEER_VERIFY:
+												(mysql_flags & CLIENT_SSL_DONT_VERIFY_SERVER_CERT?
+													MYSQLND_SSL_PEER_DONT_VERIFY:
+													MYSQLND_SSL_PEER_DEFAULT);
 			DBG_INF("Switching to SSL");
 			if (!PACKET_WRITE(auth_packet, conn)) {
 				goto close_conn;
@@ -2212,6 +2217,8 @@ MYSQLND_METHOD(mysqlnd_conn_data, next_result)(MYSQLND_CONN_DATA * const conn)
 PHPAPI const char *mysqlnd_field_type_name(enum mysqlnd_field_types field_type)
 {
 	switch(field_type) {
+		case FIELD_TYPE_JSON:
+			return "json";
 		case FIELD_TYPE_STRING:
 		case FIELD_TYPE_VAR_STRING:
 			return "string";
@@ -2971,7 +2978,7 @@ static enum_func_status
 MYSQLND_METHOD(mysqlnd_conn_data, init)(MYSQLND_CONN_DATA * conn)
 {
 	DBG_ENTER("mysqlnd_conn_data::init");
-	mysqlnd_stats_init(&conn->stats, STAT_LAST);
+	mysqlnd_stats_init(&conn->stats, STAT_LAST, conn->persistent);
 	SET_ERROR_AFF_ROWS(conn);
 
 	conn->net = mysqlnd_net_init(conn->persistent, conn->stats, conn->error_info);

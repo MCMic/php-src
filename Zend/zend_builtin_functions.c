@@ -471,8 +471,10 @@ ZEND_FUNCTION(func_get_arg)
 	} else {
 		arg = ZEND_CALL_ARG(ex, requested_offset + 1);
 	}
-	ZVAL_DEREF(arg);
-	ZVAL_COPY(return_value, arg);
+	if (EXPECTED(!Z_ISUNDEF_P(arg))) {
+		ZVAL_DEREF(arg);
+		ZVAL_COPY(return_value, arg);
+	}
 }
 /* }}} */
 
@@ -482,7 +484,7 @@ ZEND_FUNCTION(func_get_args)
 {
 	zval *p, *q;
 	uint32_t arg_count, first_extra_arg;
-	uint32_t i;
+	uint32_t i, n;
 	zend_execute_data *ex = EX(prev_execute_data);
 
 	if (ZEND_CALL_INFO(ex) & ZEND_CALL_CODE) {
@@ -498,12 +500,18 @@ ZEND_FUNCTION(func_get_args)
 		zend_hash_real_init(Z_ARRVAL_P(return_value), 1);
 		ZEND_HASH_FILL_PACKED(Z_ARRVAL_P(return_value)) {
 			i = 0;
+			n = 0;
 			p = ZEND_CALL_ARG(ex, 1);
 			if (arg_count > first_extra_arg) {
 				while (i < first_extra_arg) {
 					q = p;
-					ZVAL_DEREF(q);
-					if (Z_OPT_REFCOUNTED_P(q)) Z_ADDREF_P(q);
+					if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+						ZVAL_DEREF(q);
+						if (Z_OPT_REFCOUNTED_P(q)) { 
+							Z_ADDREF_P(q);
+						}
+						n++;
+					}
 					ZEND_HASH_FILL_ADD(q);
 					p++;
 					i++;
@@ -512,13 +520,19 @@ ZEND_FUNCTION(func_get_args)
 			}
 			while (i < arg_count) {
 				q = p;
-				ZVAL_DEREF(q);
-				if (Z_OPT_REFCOUNTED_P(q)) Z_ADDREF_P(q);
+				if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					if (Z_OPT_REFCOUNTED_P(q)) { 
+						Z_ADDREF_P(q);
+					}
+					n++;
+				}
 				ZEND_HASH_FILL_ADD(q);
 				p++;
 				i++;
 			}
 		} ZEND_HASH_FILL_END();
+		Z_ARRVAL_P(return_value)->nNumOfElements = n;
 	}
 }
 /* }}} */
@@ -782,6 +796,9 @@ static void copy_constant_array(zval *dst, zval *src) /* {{{ */
 			}
 		} else if (Z_REFCOUNTED_P(val)) {
 			Z_ADDREF_P(val);
+			if (UNEXPECTED(Z_TYPE_INFO_P(val) == IS_RESOURCE_EX)) {
+				Z_TYPE_INFO_P(new_val) &= ~(IS_TYPE_REFCOUNTED << Z_TYPE_FLAGS_SHIFT);
+			}
 		}
 	} ZEND_HASH_FOREACH_END();
 }
@@ -810,7 +827,7 @@ ZEND_FUNCTION(define)
 	ZEND_PARSE_PARAMETERS_END();
 #endif
 
-	if(non_cs) {
+	if (non_cs) {
 		case_sensitive = 0;
 	}
 
@@ -829,8 +846,13 @@ repeat:
 		case IS_STRING:
 		case IS_FALSE:
 		case IS_TRUE:
-		case IS_RESOURCE:
 		case IS_NULL:
+			break;
+		case IS_RESOURCE:
+			ZVAL_COPY(&val_free, val);
+			/* TODO: better solution than this tricky disable dtor on resource? */
+			Z_TYPE_INFO(val_free) &= ~(IS_TYPE_REFCOUNTED << Z_TYPE_FLAGS_SHIFT);
+			val = &val_free;
 			break;
 		case IS_ARRAY:
 			if (!Z_IMMUTABLE_P(val)) {
@@ -2216,6 +2238,7 @@ static void debug_backtrace_get_args(zend_execute_data *call, zval *arg_array) /
 	array_init_size(arg_array, num_args);
 	if (num_args) {
 		uint32_t i = 0;
+		uint32_t n = 0;
 		zval *p = ZEND_CALL_ARG(call, 1);
 
 		zend_hash_real_init(Z_ARRVAL_P(arg_array), 1);
@@ -2225,7 +2248,12 @@ static void debug_backtrace_get_args(zend_execute_data *call, zval *arg_array) /
 
 				if (ZEND_CALL_NUM_ARGS(call) > first_extra_arg) {
 					while (i < first_extra_arg) {
-						if (Z_OPT_REFCOUNTED_P(p)) Z_ADDREF_P(p);
+						if (EXPECTED(Z_TYPE_INFO_P(p) != IS_UNDEF)) {
+							if (Z_OPT_REFCOUNTED_P(p)) {
+								Z_ADDREF_P(p);
+							}
+							n++;
+						}
 						ZEND_HASH_FILL_ADD(p);
 						p++;
 						i++;
@@ -2235,12 +2263,18 @@ static void debug_backtrace_get_args(zend_execute_data *call, zval *arg_array) /
 			}
 
 			while (i < num_args) {
-				if (Z_OPT_REFCOUNTED_P(p)) Z_ADDREF_P(p);
+				if (EXPECTED(Z_TYPE_INFO_P(p) != IS_UNDEF)) {
+					if (Z_OPT_REFCOUNTED_P(p)) {
+						Z_ADDREF_P(p);
+					}
+					n++;
+				}
 				ZEND_HASH_FILL_ADD(p);
 				p++;
 				i++;
 			}
 		} ZEND_HASH_FILL_END();
+		Z_ARRVAL_P(arg_array)->nNumOfElements = n;
 	}
 }
 /* }}} */

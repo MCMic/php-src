@@ -129,7 +129,7 @@ static ZEND_INI_MH(OnUpdateAssertions) /* {{{ */
 
 ZEND_INI_BEGIN()
 	ZEND_INI_ENTRY("error_reporting",				NULL,		ZEND_INI_ALL,		OnUpdateErrorReporting)
-	STD_ZEND_INI_BOOLEAN("zend.assertions",				"1",    ZEND_INI_ALL,       OnUpdateAssertions,           assertions,   zend_executor_globals,  executor_globals)
+	STD_ZEND_INI_ENTRY("zend.assertions",				"1",    ZEND_INI_ALL,       OnUpdateAssertions,           assertions,   zend_executor_globals,  executor_globals)
 	STD_ZEND_INI_BOOLEAN("zend.enable_gc",				"1",	ZEND_INI_ALL,		OnUpdateGCEnabled,      gc_enabled,     zend_gc_globals,        gc_globals)
  	STD_ZEND_INI_BOOLEAN("zend.multibyte", "0", ZEND_INI_PERDIR, OnUpdateBool, multibyte,      zend_compiler_globals, compiler_globals)
  	ZEND_INI_ENTRY("zend.script_encoding",			NULL,		ZEND_INI_ALL,		OnUpdateScriptEncoding)
@@ -446,26 +446,34 @@ static void zend_init_call_trampoline_op(void) /* {{{ */
 }
 /* }}} */
 
+static void auto_global_dtor(zval *zv) /* {{{ */
+{
+	free(Z_PTR_P(zv));
+}
+/* }}} */
+
 #ifdef ZTS
-static void function_copy_ctor(zval *zv)
+static void function_copy_ctor(zval *zv) /* {{{ */
 {
 	zend_function *old_func = Z_FUNC_P(zv);
 	Z_FUNC_P(zv) = pemalloc(sizeof(zend_internal_function), 1);
 	memcpy(Z_FUNC_P(zv), old_func, sizeof(zend_internal_function));
 	function_add_ref(Z_FUNC_P(zv));
 }
+/* }}} */
 
-static void auto_global_copy_ctor(zval *zv)
+static void auto_global_copy_ctor(zval *zv) /* {{{ */
 {
 	zend_auto_global *old_ag = (zend_auto_global *) Z_PTR_P(zv);
 	zend_auto_global *new_ag = pemalloc(sizeof(zend_auto_global), 1);
 
-	new_ag->name = zend_string_copy(old_ag->name);
+	new_ag->name = old_ag->name;
 	new_ag->auto_global_callback = old_ag->auto_global_callback;
 	new_ag->jit = old_ag->jit;
 
 	Z_PTR_P(zv) = new_ag;
 }
+/* }}} */
 
 static void compiler_globals_ctor(zend_compiler_globals *compiler_globals) /* {{{ */
 {
@@ -482,7 +490,7 @@ static void compiler_globals_ctor(zend_compiler_globals *compiler_globals) /* {{
 	zend_set_default_compile_time_values();
 
 	compiler_globals->auto_globals = (HashTable *) malloc(sizeof(HashTable));
-	zend_hash_init_ex(compiler_globals->auto_globals, 8, NULL, NULL, 1, 0);
+	zend_hash_init_ex(compiler_globals->auto_globals, 8, NULL, auto_global_dtor, 1, 0);
 	zend_hash_copy(compiler_globals->auto_globals, global_auto_globals_table, auto_global_copy_ctor);
 
 	compiler_globals->last_static_member = zend_hash_num_elements(compiler_globals->class_table);
@@ -606,12 +614,6 @@ static void module_destructor_zval(zval *zv) /* {{{ */
 
 	module_destructor(module);
 	free(module);
-}
-/* }}} */
-
-static void auto_global_dtor(zval *zv) /* {{{ */
-{
-	free(Z_PTR_P(zv));
 }
 /* }}} */
 
@@ -755,10 +757,6 @@ int zend_startup(zend_utility_functions *utility_functions, char **extensions) /
 	tsrm_set_new_thread_end_handler(zend_new_thread_end_handler);
 #endif
 
-#ifdef ZEND_SIGNALS
-	zend_signal_startup();
-#endif
-
 	return SUCCESS;
 }
 /* }}} */
@@ -880,7 +878,7 @@ void zend_set_utility_values(zend_utility_values *utility_values) /* {{{ */
 /* }}} */
 
 /* this should be compatible with the standard zenderror */
-void zenderror(const char *error) /* {{{ */
+ZEND_COLD void zenderror(const char *error) /* {{{ */
 {
 	if (EG(exception)) {
 		/* An exception was thrown in the lexer, don't throw another in the parser. */
@@ -892,7 +890,7 @@ void zenderror(const char *error) /* {{{ */
 /* }}} */
 
 BEGIN_EXTERN_C()
-ZEND_API void _zend_bailout(char *filename, uint lineno) /* {{{ */
+ZEND_API ZEND_COLD void _zend_bailout(char *filename, uint lineno) /* {{{ */
 {
 
 	if (!EG(bailout)) {
@@ -1032,9 +1030,9 @@ ZEND_API zval *zend_get_configuration_directive(zend_string *name) /* {{{ */
 	} while (0)
 
 #if !defined(HAVE_NORETURN) || defined(HAVE_NORETURN_ALIAS)
-ZEND_API void zend_error(int type, const char *format, ...) /* {{{ */
+ZEND_API ZEND_COLD void zend_error(int type, const char *format, ...) /* {{{ */
 #else
-static void zend_error_va_list(int type, const char *format, va_list args)
+static ZEND_COLD void zend_error_va_list(int type, const char *format, va_list args)
 #endif
 {
 	char *str;
@@ -1274,9 +1272,9 @@ static void zend_error_va_list(int type, const char *format, va_list args)
 
 #ifdef HAVE_NORETURN
 # ifdef HAVE_NORETURN_ALIAS
-void zend_error_noreturn(int type, const char *format, ...) __attribute__ ((alias("zend_error"),noreturn));
+ZEND_COLD void zend_error_noreturn(int type, const char *format, ...) __attribute__ ((alias("zend_error"),noreturn));
 # else
-ZEND_API void zend_error(int type, const char *format, ...) /* {{{ */
+ZEND_API ZEND_COLD void zend_error(int type, const char *format, ...) /* {{{ */
 {
 	va_list va;
 
@@ -1285,7 +1283,7 @@ ZEND_API void zend_error(int type, const char *format, ...) /* {{{ */
 	va_end(va);
 }
 
-ZEND_API ZEND_NORETURN void zend_error_noreturn(int type, const char *format, ...)
+ZEND_API ZEND_COLD ZEND_NORETURN void zend_error_noreturn(int type, const char *format, ...)
 {
 	va_list va;
 
@@ -1297,7 +1295,7 @@ ZEND_API ZEND_NORETURN void zend_error_noreturn(int type, const char *format, ..
 # endif
 #endif
 
-ZEND_API void zend_throw_error(zend_class_entry *exception_ce, const char *format, ...) /* {{{ */
+ZEND_API ZEND_COLD void zend_throw_error(zend_class_entry *exception_ce, const char *format, ...) /* {{{ */
 {
 	va_list va;
 	char *message = NULL;
@@ -1326,7 +1324,7 @@ ZEND_API void zend_throw_error(zend_class_entry *exception_ce, const char *forma
 }
 /* }}} */
 
-ZEND_API void zend_type_error(const char *format, ...) /* {{{ */
+ZEND_API ZEND_COLD void zend_type_error(const char *format, ...) /* {{{ */
 {
 	va_list va;
 	char *message = NULL;
@@ -1338,7 +1336,7 @@ ZEND_API void zend_type_error(const char *format, ...) /* {{{ */
 	va_end(va);
 } /* }}} */
 
-ZEND_API void zend_internal_type_error(zend_bool throw_exception, const char *format, ...) /* {{{ */
+ZEND_API ZEND_COLD void zend_internal_type_error(zend_bool throw_exception, const char *format, ...) /* {{{ */
 {
 	va_list va;
 	char *message = NULL;
@@ -1355,7 +1353,7 @@ ZEND_API void zend_internal_type_error(zend_bool throw_exception, const char *fo
 	va_end(va);
 } /* }}} */
 
-ZEND_API void zend_output_debug_string(zend_bool trigger_break, const char *format, ...) /* {{{ */
+ZEND_API ZEND_COLD void zend_output_debug_string(zend_bool trigger_break, const char *format, ...) /* {{{ */
 {
 #if ZEND_DEBUG
 	va_list args;
@@ -1381,6 +1379,32 @@ ZEND_API void zend_output_debug_string(zend_bool trigger_break, const char *form
 }
 /* }}} */
 
+ZEND_API void zend_try_exception_handler() /* {{{ */
+{
+	if (EG(exception)) {
+		if (Z_TYPE(EG(user_exception_handler)) != IS_UNDEF) {
+			zval orig_user_exception_handler;
+			zval params[1], retval2;
+			zend_object *old_exception;
+			old_exception = EG(exception);
+			EG(exception) = NULL;
+			ZVAL_OBJ(&params[0], old_exception);
+			ZVAL_COPY_VALUE(&orig_user_exception_handler, &EG(user_exception_handler));
+
+			if (call_user_function_ex(CG(function_table), NULL, &orig_user_exception_handler, &retval2, 1, params, 1, NULL) == SUCCESS) {
+				zval_ptr_dtor(&retval2);
+				if (EG(exception)) {
+					OBJ_RELEASE(EG(exception));
+					EG(exception) = NULL;
+				}
+				OBJ_RELEASE(old_exception);
+			} else {
+				EG(exception) = old_exception;
+			}
+		}
+	}
+} /* }}} */
+
 ZEND_API int zend_execute_scripts(int type, zval *retval, int file_count, ...) /* {{{ */
 {
 	va_list files;
@@ -1403,30 +1427,9 @@ ZEND_API int zend_execute_scripts(int type, zval *retval, int file_count, ...) /
 		if (op_array) {
 			zend_execute(op_array, retval);
 			zend_exception_restore();
+			zend_try_exception_handler();
 			if (EG(exception)) {
-				if (Z_TYPE(EG(user_exception_handler)) != IS_UNDEF) {
-					zval orig_user_exception_handler;
-					zval params[1], retval2;
-					zend_object *old_exception;
-					old_exception = EG(exception);
-					EG(exception) = NULL;
-					ZVAL_OBJ(&params[0], old_exception);
-					ZVAL_COPY_VALUE(&orig_user_exception_handler, &EG(user_exception_handler));
-
-					if (call_user_function_ex(CG(function_table), NULL, &orig_user_exception_handler, &retval2, 1, params, 1, NULL) == SUCCESS) {
-						zval_ptr_dtor(&retval2);
-						if (EG(exception)) {
-							OBJ_RELEASE(EG(exception));
-							EG(exception) = NULL;
-						}
-						OBJ_RELEASE(old_exception);
-					} else {
-						EG(exception) = old_exception;
-						zend_exception_error(EG(exception), E_ERROR);
-					}
-				} else {
-					zend_exception_error(EG(exception), E_ERROR);
-				}
+				zend_exception_error(EG(exception), E_ERROR);
 			}
 			destroy_op_array(op_array);
 			efree_size(op_array, sizeof(zend_op_array));
@@ -1468,13 +1471,6 @@ ZEND_API char *zend_make_compiled_string_description(const char *name) /* {{{ */
 void free_estring(char **str_p) /* {{{ */
 {
 	efree(*str_p);
-}
-/* }}} */
-
-void free_string_zval(zval *zv) /* {{{ */
-{
-	zend_string *str = Z_PTR_P(zv);
-	zend_string_release(str);
 }
 /* }}} */
 

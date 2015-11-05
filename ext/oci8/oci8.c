@@ -42,6 +42,11 @@
 #error Use PHP OCI8 1.4 for your version of PHP
 #endif
 
+/* PHP 7 is the minimum supported version for OCI8 2.1 */
+#if PHP_MAJOR_VERSION < 7
+#error Use PHP OCI8 2.0 for your version of PHP
+#endif
+
 #include "php_oci8.h"
 #include "php_oci8_int.h"
 #include "zend_hash.h"
@@ -1917,6 +1922,10 @@ php_oci_connection *php_oci_do_connect_ex(char *username, int username_len, char
 	smart_str_append_unsigned_ex(&hashed_details, session_mode, 0);
 	smart_str_0(&hashed_details);
 
+	if (persistent) {
+		smart_str_appendl_ex(&hashed_details, "pc", sizeof("pc") - 1, 0);
+	}
+
 	/* make it lowercase */
 	/* PHPNG TODO is this safe to do? What about interned strings? */
 	php_strtolower(hashed_details.s->val, hashed_details.s->len);
@@ -1991,14 +2000,20 @@ php_oci_connection *php_oci_do_connect_ex(char *username, int username_len, char
 						if (!ping_done && (*(connection->next_pingp) > 0) && (timestamp >= *(connection->next_pingp)) && !php_oci_connection_ping(connection)) {
 							/* server died */
 						} else {
-							php_oci_connection *tmp;
+							php_oci_connection *tmp = (php_oci_connection *) NULL;
+							zval *tmp_val = (zval *) NULL;
 
 							/* okay, the connection is open and the server is still alive */
 							connection->used_this_request = 1;
-							tmp = (php_oci_connection *)connection->id->ptr;
-
-							if (tmp != NULL && tmp->hash_key->len == hashed_details.s->len &&
-								memcmp(tmp->hash_key->val, hashed_details.s->val, tmp->hash_key->len) == 0) {
+							tmp_val = zend_hash_index_find(&EG(regular_list), connection->id->handle);
+							if ((tmp_val != NULL) && (Z_TYPE_P(tmp_val) == IS_RESOURCE)) {
+								tmp = Z_RES_VAL_P(tmp_val);
+							}
+							
+							if ((tmp_val != NULL) && (tmp != NULL) &&
+								(tmp->hash_key->len == hashed_details.s->len) &&
+								(memcmp(tmp->hash_key->val, hashed_details.s->val, tmp->hash_key->len) == 0)) {
+								connection = tmp;
 								++GC_REFCOUNT(connection->id);
 								/* do nothing */
 							} else {
@@ -2361,6 +2376,10 @@ static int php_oci_connection_close(php_oci_connection *connection)
 		connection->private_spool = NULL;
 	}
 
+	if (GC_REFCOUNT(connection->hash_key) >= 2) {
+		zend_hash_del(&EG(regular_list), connection->hash_key);
+	}
+
 	if (connection->hash_key) {
 		pefree(connection->hash_key, connection->is_persistent);
 		connection->hash_key = NULL;
@@ -2629,6 +2648,8 @@ int php_oci_column_to_zval(php_oci_out_column *column, zval *value, int mode)
 void php_oci_fetch_row (INTERNAL_FUNCTION_PARAMETERS, int mode, int expected_args)
 {
 	zval *z_statement, *array;
+	zval *placeholder = (zval*) NULL;
+/*	zend_array *temp_array = (zend_array *) NULL;*/
 	php_oci_statement *statement;		  /* statement that will be fetched from */
 #if (OCI_MAJOR_VERSION >= 12)
 	php_oci_statement *invokedstatement;  /* statement this function was invoked with */
@@ -2648,6 +2669,12 @@ void php_oci_fetch_row (INTERNAL_FUNCTION_PARAMETERS, int mode, int expected_arg
 		if (ZEND_NUM_ARGS() == 2) {
 			fetch_mode = mode;
 		}
+
+		if (Z_ISREF_P(array))
+			placeholder = Z_REFVAL_P(array);
+		else
+			placeholder = array;
+
 	} else if (expected_args == 2) {
 		/* only for oci_fetch_array() */
 
@@ -2736,53 +2763,13 @@ void php_oci_fetch_row (INTERNAL_FUNCTION_PARAMETERS, int mode, int expected_arg
     }
 #endif /* OCI_MAJOR_VERSION */
 
-#if 0
-	if (expected_args > 2)
-	{
-		array_init(array);
-
-		for (i = 0; i < statement->ncolumns; i++) {
-
-			column = php_oci_statement_get_column(statement, i + 1, NULL, 0);
-
-			if (column == NULL) {
-				continue;
-			}
-			if ((column->indicator == -1) && ((fetch_mode & PHP_OCI_RETURN_NULLS) == 0)) {
-				continue;
-			}
-
-			if (!(column->indicator == -1)) {
-				zval element;
-
-				php_oci_column_to_zval(column, &element, fetch_mode);
-
-				if (fetch_mode & PHP_OCI_NUM || !(fetch_mode & PHP_OCI_ASSOC)) {
-					add_index_zval(array, i, &element);
-				}
-				if (fetch_mode & PHP_OCI_ASSOC) {
-					if (fetch_mode & PHP_OCI_NUM) {
-						Z_TRY_ADDREF_P(&element);
-					}
-					add_assoc_zval(array, column->name, &element);
-				}
-
-			} else {
-				if (fetch_mode & PHP_OCI_NUM || !(fetch_mode & PHP_OCI_ASSOC)) {
-					add_index_null(array, i);
-				}
-				if (fetch_mode & PHP_OCI_ASSOC) {
-					add_assoc_null(array, column->name);
-				}
-			}
-		}
-
-		/* RETURN_LONG(statement->ncolumns); */
+	if (placeholder == NULL) {
+		placeholder = return_value;
+	} else {
+		zval_dtor(placeholder);
 	}
-	else
-#endif
-	{
-		array_init(return_value);
+
+	array_init(placeholder);
 
 	for (i = 0; i < statement->ncolumns; i++) {
 
@@ -2801,31 +2788,27 @@ void php_oci_fetch_row (INTERNAL_FUNCTION_PARAMETERS, int mode, int expected_arg
 			php_oci_column_to_zval(column, &element, (int) fetch_mode);
 
 			if (fetch_mode & PHP_OCI_NUM || !(fetch_mode & PHP_OCI_ASSOC)) {
-				add_index_zval(return_value, i, &element);
+				add_index_zval(placeholder, i, &element);
 			}
 			if (fetch_mode & PHP_OCI_ASSOC) {
 				if (fetch_mode & PHP_OCI_NUM) {
 					Z_TRY_ADDREF_P(&element);
 				}
-				add_assoc_zval(return_value, column->name, &element);
+				add_assoc_zval(placeholder, column->name, &element);
 			}
 
 		} else {
 			if (fetch_mode & PHP_OCI_NUM || !(fetch_mode & PHP_OCI_ASSOC)) {
-				add_index_null(return_value, i);
+				add_index_null(placeholder, i);
 			}
 			if (fetch_mode & PHP_OCI_ASSOC) {
-				add_assoc_null(return_value, column->name);
+				add_assoc_null(placeholder, column->name);
 			}
 		}
 	}
 
 	if (expected_args > 2) {
-		/* Only for ocifetchinto BC.  In all other cases we return array, not long */
-		ZVAL_COPY(array, return_value); /* copy return_value to given reference */
-		/* zval_dtor(return_value); */
 		RETURN_LONG(statement->ncolumns);
-	}
 	}
 }
 /* }}} */
